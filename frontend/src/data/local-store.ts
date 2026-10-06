@@ -40,6 +40,15 @@ export function listRows(key: string): EntryRow[] {
   return allRows()[key] ?? []
 }
 
+/**
+ * 丢弃内存缓存重新从 localStorage 读取。
+ * 复核采用乐观锁：提交结论前必须重读，另一个标签页/审核人抢先下了结论时能立刻发现。
+ */
+export function reloadRows(): Record<string, EntryRow[]> {
+  cache = null
+  return allRows()
+}
+
 export function saveRows(key: string, rows: EntryRow[]): void {
   const next = { ...allRows(), [key]: rows }
   cache = next

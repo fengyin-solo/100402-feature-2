@@ -1,5 +1,6 @@
 import { MODULE_BY_KEY } from '@/data/modules'
-import { allRows, listRows, resetRows, saveRows } from '@/data/local-store'
+import { allRows, listRows, reloadRows, resetRows, saveRows } from '@/data/local-store'
+import { currentDecision, findPipelineByCode } from '@/api/pipeline-service'
 import type { ActionResult, EntryRow, ModuleMeta, OverviewResult, PageResult } from '@/data/types'
 
 // 会写进数据的「往回走」动作：命中就把这条记录标成异常态，看板上能一眼看出来。
@@ -34,6 +35,18 @@ export function runAction(key: string, id: number, action: string): ActionResult
   if (!target) {
     return { ok: false, message: `${meta.entity}没有登记「${action}」这个动作` }
   }
+  // 缺陷确认意味着安排巡检核实：关联管线当前口径停止巡检时，服务层直接拦截。
+  if (key === 'defect' && action === '确认缺陷') {
+    const defectRows = listRows('defect')
+    const defect = defectRows.find((row) => Number(row.id) === id)
+    const linked = defect ? findPipelineByCode(String(defect['所属管线'] ?? '')) : undefined
+    if (linked && !currentDecision(linked).allowInspection) {
+      return {
+        ok: false,
+        message: `关联管线 ${linked['管线编号']} 当前判定为「${currentDecision(linked).verdict}」并暂停巡检，请先在管线登记完成复核或补正后再确认缺陷`,
+      }
+    }
+  }
   const rows = listRows(key)
   const index = rows.findIndex((row) => Number(row.id) === id)
   if (index < 0) {
@@ -59,6 +72,55 @@ export function runAction(key: string, id: number, action: string): ActionResult
 export function resetModule(key: string): PageResult {
   resetRows(key)
   return listEntries(key)
+}
+
+/**
+ * 缺陷登记：所属管线按当前准入规则实时核对是否允许继续巡检。
+ * 规则调整后老管线原建档结论保留，但只要当前口径判为停止巡检，就不允许再登记缺陷巡检任务。
+ */
+export function createDefect(draft: {
+  pipelineCode: string
+  defectType: string
+  location: string
+  severity: string
+  foundDate: string
+  description: string
+}): ActionResult & { id?: number; allowInspection?: boolean } {
+  const pipelines = reloadRows().pipeline ?? []
+  const linked = pipelines.find(
+    (row) => String(row['管线编号'] ?? '') === draft.pipelineCode.trim(),
+  )
+  if (!linked) {
+    return { ok: false, message: `未找到管线编号「${draft.pipelineCode}」，请先在管线登记中建档` }
+  }
+  const decision = currentDecision(linked)
+  if (!decision.allowInspection) {
+    const detail = [...decision.rejectReasons, ...decision.reviewReasons].join('；') || '当前口径不允许继续巡检'
+    return {
+      ok: false,
+      allowInspection: false,
+      message: `管线 ${draft.pipelineCode} 当前判定为「${decision.verdict}」，${detail}。请先完成复核或补正后再登记缺陷巡检。`,
+    }
+  }
+  const rows = reloadRows().defect ?? []
+  const id = rows.reduce((max, row) => Math.max(max, Number(row.id)), 0) + 1
+  const code = `DEFE-${String(id).padStart(4, '0')}`
+  const row: EntryRow = {
+    id,
+    status: '待确认',
+    pending: true,
+    abnormal: false,
+    缺陷编号: code,
+    所属管线: draft.pipelineCode.trim(),
+    缺陷类型: draft.defectType,
+    发现位置: draft.location,
+    严重等级: draft.severity,
+    发现日期: draft.foundDate,
+    缺陷描述: draft.description,
+    记录状态: '待确认',
+  }
+  saveRows('defect', [...rows, row])
+  return { ok: true, allowInspection: true, id, message: `缺陷 ${code} 已登记，管线当前允许继续巡检。` }
 }
 
 export function exportEntries(key: string): { filename: string; content: string } {
