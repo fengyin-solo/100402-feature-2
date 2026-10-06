@@ -54,6 +54,11 @@ export function resetRows(key: string): EntryRow[] {
   return rows
 }
 
+// 其它标签页改了同一份 localStorage 时，丢弃内存缓存，认领/复核的并发判定才不会用到旧数据。
+export function invalidateCache(): void {
+  cache = null
+}
+
 export function storageKey(): string {
   return STORAGE_KEY
 }
